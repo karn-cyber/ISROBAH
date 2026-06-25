@@ -1,0 +1,25 @@
+{
+  "roc_auc": 0.9979396208737953,
+  "pr_auc": 0.9753106072432188,
+  "iou": 0.8994565217366863,
+  "baseline_cpr_only": {
+    "rim_false_positives": 4070,
+    "rim_fp_rate": 0.2742402803045432
+  },
+  "himadri": {
+    "rim_false_positives": 6,
+    "rim_fp_rate": 0.0004042854255103831
+  },
+  "rim_fp_reduction_fraction": 0.9985257985257985,
+  "volume": {
+    "estimate_m3": 35015.91800678019,
+    "truth_m3": 36952.61328125,
+    "relative_error": -0.05241023847838243,
+    "abs_relative_error": 0.05241023847838243,
+    "interval_m3": [
+      27554.737839129535,
+      47047.89998703226
+    ],
+    "interval_contains_truth": true
+  }
+}

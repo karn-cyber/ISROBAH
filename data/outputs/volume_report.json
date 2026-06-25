@@ -1,0 +1,44 @@
+{
+  "total_m3": 35015.91800678019,
+  "lower_m3": 27554.737839129535,
+  "upper_m3": 47047.89998703226,
+  "mean_ice_fraction": 0.20719478110520823,
+  "per_depth_bin": [
+    {
+      "bin": 1,
+      "depth_top_m": 0.0,
+      "depth_bottom_m": 1.0,
+      "volume_m3": 6119.604935203679
+    },
+    {
+      "bin": 2,
+      "depth_top_m": 1.0,
+      "depth_bottom_m": 2.0,
+      "volume_m3": 6590.343776373193
+    },
+    {
+      "bin": 3,
+      "depth_top_m": 2.0,
+      "depth_bottom_m": 3.0,
+      "volume_m3": 7061.0826175427055
+    },
+    {
+      "bin": 4,
+      "depth_top_m": 3.0,
+      "depth_bottom_m": 4.0,
+      "volume_m3": 7531.821458712221
+    },
+    {
+      "bin": 5,
+      "depth_top_m": 4.0,
+      "depth_bottom_m": 5.0,
+      "volume_m3": 8002.560299881735
+    }
+  ],
+  "meta": {
+    "n_mc": 2000,
+    "depth_m": 5.0,
+    "mean_eps_eff": 2.7902657985687256,
+    "contributing_pixels": 338
+  }
+}

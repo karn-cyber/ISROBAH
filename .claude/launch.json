@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "himadri-dashboard",
+      "runtimeExecutable": "/Users/neelanshu./ISROBAH/.venv/bin/streamlit",
+      "runtimeArgs": ["run", "src/himadri/viz/dashboard.py", "--server.headless", "true"],
+      "port": 8501
+    }
+  ]
+}

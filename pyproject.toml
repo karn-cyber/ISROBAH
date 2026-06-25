@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "himadri"
+version = "1.0.0"
+description = "Subsurface lunar-ice detection, landing & rover traverse (ISRO BAH 2026 PS-8)"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy", "scipy", "scikit-image", "scikit-learn",
+  "rasterio", "shapely", "pyproj", "geopandas",
+  "matplotlib", "typer", "pyyaml", "jinja2", "pandas", "networkx", "loguru",
+]
+
+[project.optional-dependencies]
+accel = ["xgboost"]
+deep = ["torch", "segmentation-models-pytorch"]
+dashboard = ["streamlit", "plotly"]
+dev = ["pytest"]
+
+[project.scripts]
+himadri = "himadri.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,22 @@
+# Core (CPU, always required)
+numpy
+scipy
+scikit-image
+scikit-learn
+rasterio
+shapely
+pyproj
+geopandas
+matplotlib
+typer
+pyyaml
+jinja2
+pandas
+networkx
+loguru
+pytest
+
+# Optional accelerators / upgrades (the pipeline runs WITHOUT these):
+#   pip install xgboost                              # faster, importance-rich classifier
+#   pip install torch segmentation-models-pytorch    # U-Net spatial refinement
+#   pip install streamlit plotly                     # interactive dashboard

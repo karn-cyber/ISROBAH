@@ -1,0 +1,51 @@
+# HIMADRI configuration — single source of truth.
+# All physical constants are priors/ranges, not magic numbers.
+
+mode: synthetic            # synthetic | real
+seed: 42
+
+grid:
+  res_m: 10                # metres per pixel on the common polar grid
+  height: 256
+  width: 256
+
+paths:
+  dfsar_l: null            # set in real mode (GeoTIFF: 4 Stokes bands)
+  dfsar_s: null
+  ohrc: null
+  dem: null                # null -> synthetic fallback
+  sun_geometry: null       # CSV az_deg,el_deg ; null -> analytic fallback
+  outdir: data/outputs
+
+detection:
+  cpr_ice_min: 1.0
+  dop_ice_max: 0.13
+  use_unet: false          # optional torch upgrade; off by default (CPU/portable)
+  unet_epochs: 30
+  mc_dropout_passes: 20
+  target_prob: 0.6
+
+volume:
+  depth_m: 5.0
+  n_mc: 2000
+  eps_ice: 3.15
+  eps_regolith: 2.7
+  regolith_density_prior: [1400, 1900]   # kg/m^3
+  porosity_prior: [0.40, 0.55]
+  loss_tangent_prior: [0.002, 0.008]
+  n_depth_bins: 5
+
+landing:
+  weights: {slope: 0.22, roughness: 0.18, illumination: 0.20, proximity: 0.30, comms: 0.10}
+  max_slope_deg: 12
+  n_sites: 5
+  min_separation_m: 200
+
+planning:
+  method: dstar_lite       # astar | dstar_lite
+  battery_Wh: 2000         # VIPER-class battery (Wh)
+  thermal_limit_min: 720   # battery-warmed survival in shadow (min)
+  rover_speed_mps: 0.10
+  base_draw_W: 40
+  weights: {slope: 0.30, hazard: 0.30, shadow_power: 0.25, thermal: 0.10, distance: 0.05}
+  max_slope_deg: 25
