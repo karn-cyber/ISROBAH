@@ -33,12 +33,15 @@ def _build_model(seed: int):
         )
         return model, "xgboost"
     except Exception:
-        from sklearn.ensemble import HistGradientBoostingClassifier
+        # RandomForest fallback: interpretable (feature_importances_), supports
+        # sample weights, robust with few labels — no fragile dependency.
+        from sklearn.ensemble import RandomForestClassifier
 
-        model = HistGradientBoostingClassifier(
-            max_iter=300, max_depth=4, learning_rate=0.08, random_state=seed,
+        model = RandomForestClassifier(
+            n_estimators=250, max_depth=14, min_samples_leaf=3, n_jobs=-1,
+            class_weight="balanced_subsample", random_state=seed,
         )
-        return model, "histgradientboosting"
+        return model, "random_forest"
 
 
 def _feature_matrix(feats: FeatureStack, bands: list[str]) -> np.ndarray:

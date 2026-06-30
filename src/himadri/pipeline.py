@@ -15,10 +15,77 @@ from .landing.site_selection import select_landing
 from .planning import cost_surface, energy, planner
 from .preprocess import coregister, masks, speckle, terrain
 from .synth.generate import generate_scene
-from .types import FeatureStack, IceResult, Scene
+from .types import (
+    FeatureStack,
+    IceResult,
+    OpticalProduct,
+    RadarProduct,
+    Scene,
+    SunGeometry,
+)
 from .validate import metrics as metrics_mod
 from .viz import maps, report
 from .volume.dielectric import estimate_volume
+
+
+def default_sun(n: int = 24, elevation_deg: float = 1.5) -> SunGeometry:
+    """Analytic low-polar-sun sweep used when no SPICE/ephemeris is supplied."""
+    return SunGeometry(azimuth_deg=np.linspace(0, 360, n, endpoint=False),
+                       elevation_deg=np.full(n, elevation_deg))
+
+
+def build_real_scene(cfg: Config) -> Scene:
+    """Assemble a Scene from real product files (DEM is the geometric backbone).
+
+    The analysis grid is taken from the DEM footprint (downsampled to keep
+    multi-GB polar tiles tractable); DFSAR and OHRC are warped onto it. If only
+    L-band DFSAR is supplied, S-band falls back to a copy of L so the pipeline
+    still runs — the L/S depth feature is then neutral (see make_pseudolabels).
+    """
+    if cfg.paths.dem is None:
+        raise ValueError("real mode requires a DEM (LOLA polar tile); none supplied")
+    logger.info("loading real products (DEM defines the common grid)")
+
+    if cfg.grid.center_lon is not None and cfg.grid.center_lat is not None:
+        # crater-focused grid: crop the big polar tile to a square ROI
+        from .grid import grid_centered_on_lonlat
+        grid = grid_centered_on_lonlat(cfg.grid.center_lon, cfg.grid.center_lat,
+                                       cfg.grid.half_width_m, cfg.grid.res_m)
+        dem = loaders.load_dem(cfg.paths.dem, grid=grid)
+        logger.info(f"crater grid @ ({cfg.grid.center_lon},{cfg.grid.center_lat}): "
+                    f"{grid.width}x{grid.height} @ {grid.res_m:.0f} m/px")
+    else:
+        max_dim = max(cfg.grid.height, cfg.grid.width)
+        dem = loaders.load_dem(cfg.paths.dem, grid=None, max_dim=max_dim)
+        grid = dem.grid
+        logger.info(f"common grid: {grid.width}x{grid.height} @ {grid.res_m:.1f} m/px")
+
+    if cfg.paths.dfsar_l is None:
+        raise ValueError("real mode requires at least L-band DFSAR; none supplied")
+    radar_l = loaders.load_dfsar(cfg.paths.dfsar_l, "L", grid=grid)
+    if cfg.paths.dfsar_s:
+        radar_s = loaders.load_dfsar(cfg.paths.dfsar_s, "S", grid=grid)
+    else:
+        logger.warning("no S-band DFSAR -> L/S depth feature neutral (L-only mode)")
+        radar_s = RadarProduct(grid=grid, stokes=radar_l.stokes.copy(), band="S",
+                               meta={"l_only_fallback": True})
+
+    if cfg.paths.ohrc:
+        opt = loaders.load_ohrc(cfg.paths.ohrc, grid=grid)
+    else:
+        logger.warning("no OHRC -> optical roughness from DEM only")
+        opt = OpticalProduct(grid=grid, reflectance=np.full(grid.shape, np.nan,
+                                                            dtype=np.float32))
+    # track where the radar swath actually has data (real geocoded products
+    # only cover part of the crater grid); used to mask detection downstream.
+    valid = np.isfinite(radar_l.stokes[0]) & (np.nan_to_num(radar_l.stokes[0]) > 1e-9)
+    radar_l.meta["valid"] = valid
+    cover = float(valid.mean())
+    logger.info(f"radar swath covers {cover*100:.0f}% of the crater grid")
+
+    sun = loaders.load_sun_geometry(cfg.paths.sun_geometry) or default_sun()
+    return Scene(grid=grid, radar_l=radar_l, radar_s=radar_s, optical=opt,
+                 dem=dem, sun=sun, truth={})
 
 
 def load_or_synthesize(cfg: Config) -> Scene:
@@ -28,21 +95,7 @@ def load_or_synthesize(cfg: Config) -> Scene:
             cfg.mode = "synthetic"
         logger.info("generating synthetic doubly-shadowed crater scene")
         return generate_scene(cfg)
-
-    # real mode (best-effort adapter; synthetic remains the default)
-    logger.info("loading real DFSAR/OHRC/DEM products")
-    from .grid import build_grid
-
-    grid = build_grid(cfg)
-    radar_l = coregister.radar_to_grid(loaders.load_dfsar(cfg.paths.dfsar_l, "L"), grid)
-    radar_s = coregister.radar_to_grid(loaders.load_dfsar(cfg.paths.dfsar_s, "S"), grid)
-    opt = coregister.optical_to_grid(loaders.load_ohrc(cfg.paths.ohrc), grid)
-    dem = loaders.load_dem(cfg.paths.dem)
-    if dem is None:
-        raise ValueError("real mode requires a DEM; none supplied")
-    sun = loaders.load_sun_geometry(cfg.paths.sun_geometry) or generate_scene(cfg).sun
-    return Scene(grid=grid, radar_l=radar_l, radar_s=radar_s, optical=opt,
-                 dem=dem, sun=sun, truth={})
+    return build_real_scene(cfg)
 
 
 def preprocess(scene: Scene, cfg: Config) -> Scene:
@@ -68,6 +121,9 @@ def build_features(scene: Scene, cfg: Config) -> FeatureStack:
     bands["cpr_S"] = terrain.normalize_cpr(bands["cpr_S"], inc)
     bands["geometry_mask"] = masks.layover_shadow(
         scene.dem.elevation, scene.grid.res_m, inc).astype(np.float32)
+    valid = scene.radar_l.meta.get("valid")
+    bands["radar_valid"] = (valid.astype(np.float32) if valid is not None
+                            else np.ones(scene.grid.shape, np.float32))
     return FeatureStack(grid=scene.grid, bands=bands)
 
 
@@ -82,8 +138,11 @@ def detect(feats: FeatureStack, cfg: Config) -> tuple[IceResult, dict, str]:
 
     rock_prob = fusion.optical_rock_probability(feats)
     posterior = fusion.bayesian_fusion(radar_prob, rock_prob)
-    # restrict to PSR interior (ice only survives in shadow)
+    # restrict to PSR interior (ice only survives in shadow) and to where the
+    # radar swath actually has data.
     posterior = posterior * (feats.bands["psr_mask"] > 0.5)
+    if "radar_valid" in feats.bands:
+        posterior = posterior * (feats.bands["radar_valid"] > 0.5)
 
     unc = uncertainty.total_uncertainty(
         posterior, radar_prob, rock_prob, feats.bands["geometry_mask"])
@@ -108,7 +167,8 @@ def export(scene, feats, ice, vol, suitability, sites, route_info, energy_prof,
     writers.write_geotiff(outdir / "landing_suitability.tif", suitability, grid)
     feat_dir = outdir / "features"
     for name in ("cpr_L", "dop_L", "mchi_volume_L", "ls_ratio", "roughness",
-                 "slope_deg", "illumination_frac", "psr_mask", "doubly_shadowed_mask"):
+                 "slope_deg", "illumination_frac", "psr_mask", "doubly_shadowed_mask",
+                 "radar_valid", "s0_L"):
         if name in feats.bands:
             writers.write_geotiff(feat_dir / f"{name}.tif", feats.bands[name], grid)
 
@@ -123,6 +183,10 @@ def export(scene, feats, ice, vol, suitability, sites, route_info, energy_prof,
         writers.write_vector(sites, outdir / "landing_sites.gpkg", layer="landing_sites")
 
     route_paths = export_traverse(route_info, energy_prof, grid, outdir)
+    # persist the route + energy profile as JSON so the API/UI can replay it
+    route_rc = [[int(r), int(c)] for r, c in route_info.get("route", [])]
+    writers.write_json(outdir / "traverse.json",
+                       {"route": route_rc, "energy": energy_prof})
 
     figs = maps.make_maps(feats, ice, suitability, sites,
                           route_info.get("route", []), vol, scene.truth, outdir)
@@ -181,15 +245,22 @@ def run_pipeline(cfg: Config) -> dict:
     logger.info("landing-site selection")
     suitability, sites = select_landing(feats, ice, cfg)
 
-    logger.info("rover traverse planning (dash-and-return)")
     cost = cost_surface.build_cost_surface(feats, cfg)
     start = _pick_start(sites, feats)
-    goal = _pick_goal(ice)
-    route_info = planner.dash_and_return(
-        cost, feats.bands["illumination_frac"], start, goal, cfg)
-    energy_prof = energy.energy_profile(
-        route_info.get("route", []), cost, feats.bands["illumination_frac"],
-        feats.bands["slope_deg"], feats.grid, cfg)
+    goal = _pick_reachable_goal(ice, feats, cost, start)
+    if goal is None:
+        logger.warning("no doubly-shadowed floor / ice target found -> "
+                       "skipping traverse (no meaningful destination)")
+        route_info = {"route": []}
+        energy_prof = {"feasible": False, "reason": "no ice target detected",
+                       "waypoints": []}
+    else:
+        logger.info("rover traverse planning (dash-and-return)")
+        route_info = planner.dash_and_return(
+            cost, feats.bands["illumination_frac"], start, goal, cfg)
+        energy_prof = energy.energy_profile(
+            route_info.get("route", []), cost, feats.bands["illumination_frac"],
+            feats.bands["slope_deg"], feats.grid, cfg)
 
     metrics = None
     if cfg.mode == "synthetic" and scene.truth:
@@ -210,18 +281,73 @@ def run_pipeline(cfg: Config) -> dict:
     return out
 
 
-def _pick_start(sites, feats):
+def _pick_start(sites, feats, goal=None):
+    """Land at the ranked site that gives the shortest, safest dash to the
+    target — i.e. the candidate nearest the goal (a real mission lands on the
+    rim closest to the crater it must reach)."""
     if len(sites):
-        s = sites.iloc[0]
+        if goal is not None:
+            d = [(r["row"] - goal[0]) ** 2 + (r["col"] - goal[1]) ** 2
+                 for _, r in sites.iterrows()]
+            s = sites.iloc[int(np.argmin(d))]
+        else:
+            s = sites.iloc[0]
         return (int(s["row"]), int(s["col"]))
-    # fallback: brightest low-slope pixel
     score = feats.bands["illumination_frac"] - (feats.bands["slope_deg"] / 90.0)
     return tuple(np.unravel_index(np.argmax(score), score.shape))
 
 
-def _pick_goal(ice: IceResult):
+def _pick_reachable_goal(ice: IceResult, feats: FeatureStack, cost, start):
+    """The traverse destination, constrained to terrain the rover can actually
+    reach. The deepest doubly-shadowed floor is often ringed by un-traversable
+    (>~40°) walls, so we target the COLDEST point reachable from the landing
+    site — the accessible cold-trap margin. Priority: a confident ice target →
+    the doubly-shadowed floor → the wider PSR → the coldest reachable ground.
+    Guarantees a feasible route while staying scientifically on-target."""
+    from scipy import ndimage
+
+    INF = 1e9
+    passable = cost < INF
+    if not passable[start]:
+        # snap start to the nearest passable cell
+        d, (ir, ic) = ndimage.distance_transform_edt(~passable, return_indices=True)
+        start = (int(ir[start]), int(ic[start]))
+    lbl, _ = ndimage.label(passable)
+    comp = (lbl == lbl[start]) if lbl[start] > 0 else passable
+    illum = feats.bands["illumination_frac"]
+
+    candidates = []
+    if ice.target_mask.any():
+        candidates.append(comp & ice.target_mask)
+    for key in ("doubly_shadowed_mask", "psr_mask"):
+        m = feats.bands.get(key)
+        if m is not None:
+            candidates.append(comp & (m > 0.5))
+    candidates.append(comp)  # last resort: coldest reachable ground
+    for sel in candidates:
+        if sel.any():
+            cand = np.where(sel, illum, np.inf)  # coldest (least-lit) reachable
+            return tuple(int(v) for v in np.unravel_index(np.argmin(cand), cand.shape))
+    return None
+
+
+def _pick_goal(ice: IceResult, feats: FeatureStack | None = None, min_prob: float = 0.3):
+    """The traverse destination. PS-8's objective is to *reach the
+    doubly-shadowed crater floor* to access subsurface ice — so we target the
+    floor itself (the coldest, most ice-favourable ground), independent of
+    whether this particular radar swath detected ice. If high-confidence ice
+    exists, we aim for it directly."""
     if ice.target_mask.any():
         ys, xs = np.where(ice.target_mask)
-        # centroid of the largest target cluster (most confident region)
         return (int(np.median(ys)), int(np.median(xs)))
-    return tuple(np.unravel_index(np.argmax(ice.probability), ice.probability.shape))
+    if feats is not None:
+        for key in ("doubly_shadowed_mask", "psr_mask"):
+            mask = feats.bands.get(key)
+            if mask is not None and (mask > 0.5).any():
+                # the flattest (most reachable) point on the cold floor
+                slope = feats.bands.get("slope_deg")
+                cand = np.where(mask > 0.5, slope if slope is not None else 0.0, np.inf)
+                return tuple(int(v) for v in np.unravel_index(np.argmin(cand), cand.shape))
+    if float(np.nanmax(ice.probability)) >= min_prob:
+        return tuple(int(v) for v in np.unravel_index(np.nanargmax(ice.probability), ice.probability.shape))
+    return None

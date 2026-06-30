@@ -33,13 +33,18 @@ def make_pseudolabels(feats: FeatureStack, cfg: Config) -> tuple[np.ndarray, np.
 
     rough_n = rough / (np.nanpercentile(rough, 95) + 1e-6)
 
+    # The L/S depth criterion is only meaningful when two bands exist. In
+    # L-band-only real data ls_ratio is ~1 everywhere; drop it gracefully.
+    ls_informative = float(np.nanstd(ls)) > 0.05
+    ls_ok = (ls > 1.2) if ls_informative else np.ones_like(cpr, dtype=bool)
+
     # POSITIVE seeds: the multi-evidence ice signature
     pos = (
         (cpr > cfg.detection.cpr_ice_min)
         & (dop < cfg.detection.dop_ice_max)
         & (vol_frac > 0.55)
         & (rough_n < 0.4)
-        & (ls > 1.2)
+        & ls_ok
         & in_psr
     )
     # NEGATIVE seeds: clearly rough / double-bounce / boulder-rich

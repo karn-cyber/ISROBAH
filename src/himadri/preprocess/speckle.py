@@ -17,6 +17,9 @@ def refined_lee(stokes: np.ndarray, window: int = 7, looks: float = 8.0) -> np.n
     The adaptive weight is derived from S0 (total power) and applied to all
     channels so polarimetric ratios stay consistent.
     """
+    # real geocoded products have NaN outside the radar swath; zero-fill so the
+    # moving-window filter doesn't spread NaN across the whole grid.
+    stokes = np.nan_to_num(stokes.astype(np.float32), nan=0.0)
     s0 = stokes[0].astype(np.float64)
     mean = ndimage.uniform_filter(s0, size=window)
     mean_sq = ndimage.uniform_filter(s0**2, size=window)

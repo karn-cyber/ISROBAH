@@ -15,6 +15,11 @@ class GridCfg:
     res_m: float = 10.0
     height: int = 256
     width: int = 256
+    # Real mode: crop the (large) DEM tile to a crater ROI. If center_* are set,
+    # the analysis grid is a square of half-width `half_width_m` centred there.
+    center_lon: float | None = None
+    center_lat: float | None = None
+    half_width_m: float = 12000.0
 
 
 @dataclass

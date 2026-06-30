@@ -1,0 +1,27 @@
+# Keep the image small: exclude the multi-GB raw inputs (not needed at runtime),
+# the venv, node_modules, and scratch. The API serves precomputed outputs + web/dist.
+.venv/
+**/__pycache__/
+*.pyc
+web/node_modules/
+web/src/
+web/public/
+node_modules/
+# raw mission inputs (re-run inputs only; runtime uses data/outputs/)
+*.zip
+*.IMG
+*.LBL
+data/raw/
+data/interim/
+data/processed/
+data/synthetic/
+data/outputs/real/
+rover_assets/
+# docs / misc
+*.docx
+*.pptx
+*.pdf
+.git/
+.claude/
+tests/
+notebooks/

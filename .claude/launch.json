@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "himadri-api",
+      "runtimeExecutable": "/Users/neelanshu./ISROBAH/.venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "himadri.api:app", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000
+    },
+    {
       "name": "himadri-dashboard",
       "runtimeExecutable": "/Users/neelanshu./ISROBAH/.venv/bin/streamlit",
       "runtimeArgs": ["run", "src/himadri/viz/dashboard.py", "--server.headless", "true"],

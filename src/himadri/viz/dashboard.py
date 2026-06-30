@@ -12,6 +12,8 @@ Requires:  pip install streamlit plotly   (the core pipeline does not).
 from __future__ import annotations
 
 import argparse
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
@@ -79,18 +81,23 @@ def get_base(seed: int, h: int, w: int):
     return scene, feats
 
 
-@st.cache_data(show_spinner=False)
-def get_radar_prob(seed, h, w, cpr_min, dop_max):
-    """Classifier ice probability — depends on the pseudo-label thresholds."""
-    scene, feats = get_base(seed, h, w)
-    cfg = Config()
-    cfg.seed = seed
-    cfg.detection.cpr_ice_min = cpr_min
-    cfg.detection.dop_ice_max = dop_max
+def detect_core(feats, cfg):
+    """Pseudo-labels -> classifier -> radar & optical-rock probabilities."""
     labels, weights = pseudolabels.make_pseudolabels(feats, cfg)
     radar_prob, importance, backend = classifier.train_predict(feats, labels, weights, cfg)
     rock_prob = fusion.optical_rock_probability(feats)
     return radar_prob, rock_prob, importance, backend
+
+
+@st.cache_data(show_spinner=False)
+def get_radar_prob(seed, h, w, cpr_min, dop_max):
+    """Synthetic-mode cached detection (depends on pseudo-label thresholds)."""
+    _, feats = get_base(seed, h, w)
+    cfg = Config()
+    cfg.seed = seed
+    cfg.detection.cpr_ice_min = cpr_min
+    cfg.detection.dop_ice_max = dop_max
+    return detect_core(feats, cfg)
 
 
 def build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max):
@@ -109,35 +116,15 @@ def build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max):
                      target_mask=target)
 
 
-@st.cache_data(show_spinner=False)
-def get_plan(seed, h, w, cpr_min, dop_max, k, target_prob, unc_max,
-             battery, slope_lim, prox_w, n_mc):
-    """Volume + landing + traverse for the current knobs (cached)."""
-    scene, feats = get_base(seed, h, w)
-    radar_prob, rock_prob, _, _ = get_radar_prob(seed, h, w, cpr_min, dop_max)
-    ice = build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max)
-
-    cfg = Config()
-    cfg.seed = seed
-    cfg.volume.n_mc = n_mc
-    cfg.planning.battery_Wh = battery
-    cfg.planning.max_slope_deg = slope_lim
-    cfg.landing.weights["proximity"] = prox_w
+def plan_core(scene, feats, ice, cfg):
+    """Volume + landing + traverse + (if truth) metrics. Source-agnostic."""
+    from himadri import pipeline as P
 
     vol = estimate_volume(ice, feats, cfg)
     suit, sites = select_landing(feats, ice, cfg)
     cost = cost_surface.build_cost_surface(feats, cfg)
-    if len(sites):
-        start = (int(sites.iloc[0]["row"]), int(sites.iloc[0]["col"]))
-    else:
-        sc = feats.bands["illumination_frac"] - feats.bands["slope_deg"] / 90.0
-        start = tuple(int(v) for v in np.unravel_index(np.argmax(sc), sc.shape))
-    if ice.target_mask.any():
-        ys, xs = np.where(ice.target_mask)
-        goal = (int(np.median(ys)), int(np.median(xs)))
-    else:
-        goal = tuple(int(v) for v in np.unravel_index(
-            np.argmax(ice.probability), ice.probability.shape))
+    start = P._pick_start(sites, feats)
+    goal = P._pick_goal(ice)
     route_info = planner.dash_and_return(cost, feats.bands["illumination_frac"],
                                          start, goal, cfg)
     eprof = energy_mod.energy_profile(route_info.get("route", []), cost,
@@ -150,10 +137,50 @@ def get_plan(seed, h, w, cpr_min, dop_max, k, target_prob, unc_max,
         metrics = M.evaluate(ice.probability, ice.target_mask, scene.truth, feats,
                              cfg, vol_est=vol, vol_truth=scene.truth.get("volume_m3"))
     return {
-        "prob": ice.probability, "unc": ice.uncertainty, "target": ice.target_mask,
         "suit": np.asarray(suit), "sites": site_rc, "route": route_info.get("route", []),
         "energy": eprof, "vol": vol, "metrics": metrics,
     }
+
+
+@st.cache_data(show_spinner=False)
+def get_plan(seed, h, w, cpr_min, dop_max, k, target_prob, unc_max,
+             battery, slope_lim, prox_w, n_mc):
+    """Synthetic-mode cached plan."""
+    scene, feats = get_base(seed, h, w)
+    radar_prob, rock_prob, _, _ = get_radar_prob(seed, h, w, cpr_min, dop_max)
+    ice = build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max)
+    cfg = _knob_cfg(seed, n_mc, battery, slope_lim, prox_w)
+    return plan_core(scene, feats, ice, cfg)
+
+
+def _knob_cfg(seed, n_mc, battery, slope_lim, prox_w):
+    cfg = Config()
+    cfg.seed = seed
+    cfg.volume.n_mc = int(n_mc)
+    cfg.planning.battery_Wh = float(battery)
+    cfg.planning.max_slope_deg = float(slope_lim)
+    cfg.landing.weights["proximity"] = float(prox_w)
+    return cfg
+
+
+@st.cache_resource(show_spinner=False)
+def get_real_base(sig: str, dem_path: str, l_path: str, s_path: str = "",
+                  ohrc_path: str = "", grid_dim: int = 384):
+    """Build (scene, feats) from uploaded real product files. `sig` keys the
+    cache (changes when uploads change)."""
+    from himadri import pipeline as P
+
+    cfg = Config()
+    cfg.mode = "real"
+    cfg.grid.height = cfg.grid.width = int(grid_dim)
+    cfg.paths.dem = dem_path
+    cfg.paths.dfsar_l = l_path
+    cfg.paths.dfsar_s = s_path or None
+    cfg.paths.ohrc = ohrc_path or None
+    scene = P.build_real_scene(cfg)
+    scene = P.preprocess(scene, cfg)
+    feats = P.build_features(scene, cfg)
+    return scene, feats
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +221,61 @@ def heatmap(z, title, colorscale="Viridis", zmin=None, zmax=None, overlay_route=
 #  App                                                                        #
 # --------------------------------------------------------------------------- #
 
+def _save_uploads(files, subdir: str) -> list[str]:
+    base = Path(tempfile.gettempdir()) / "himadri_uploads" / subdir
+    base.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files:
+        p = base / f.name
+        p.write_bytes(f.getbuffer())
+        saved.append(str(p))
+    return saved
+
+
+def _openable(saved: list[str], prefer: list[str]) -> str | None:
+    for ext in prefer:
+        for p in saved:
+            if p.lower().endswith(ext):
+                return p
+    return saved[0] if saved else None
+
+
+def _real_upload_panel(s):
+    """Sidebar file-drop for real products. Returns dict of openable paths + a
+    cache signature, or None until the minimum (DEM + L-band DFSAR) is present."""
+    s.markdown("**Real products** · drop files (GeoTIFF preferred; PDS `.img`+`.lbl` "
+               "pairs accepted together).")
+    dem_f = s.file_uploader("LOLA DEM (.tif / .img+.lbl)", type=["tif", "tiff", "img", "lbl"],
+                            accept_multiple_files=True, key="dem")
+    l_f = s.file_uploader("DFSAR L-band (Stokes or quad-pol)",
+                          type=["tif", "tiff", "img", "xml", "lbl"],
+                          accept_multiple_files=True, key="dl")
+    s2_f = s.file_uploader("DFSAR S-band (optional)",
+                           type=["tif", "tiff", "img", "xml", "lbl"],
+                           accept_multiple_files=True, key="ds")
+    ohrc_f = s.file_uploader("OHRC optical (optional)",
+                             type=["tif", "tiff", "img", "xml"],
+                             accept_multiple_files=True, key="oh")
+    out: dict = {}
+    sig_parts = []
+    if dem_f:
+        out["dem"] = _openable(_save_uploads(dem_f, "dem"), [".lbl", ".tif", ".tiff", ".img"])
+        sig_parts += [f.name + str(f.size) for f in dem_f]
+    if l_f:
+        out["dfsar_l"] = _openable(_save_uploads(l_f, "dl"), [".tif", ".tiff", ".xml", ".img", ".lbl"])
+        sig_parts += [f.name + str(f.size) for f in l_f]
+    if s2_f:
+        out["dfsar_s"] = _openable(_save_uploads(s2_f, "ds"), [".tif", ".tiff", ".xml", ".img", ".lbl"])
+        sig_parts += [f.name + str(f.size) for f in s2_f]
+    if ohrc_f:
+        out["ohrc"] = _openable(_save_uploads(ohrc_f, "oh"), [".tif", ".tiff", ".xml", ".img"])
+        sig_parts += [f.name + str(f.size) for f in ohrc_f]
+    out["sig"] = "|".join(sig_parts)
+    if not out.get("dfsar_s"):
+        s.caption("No S-band → L/S depth feature runs in neutral (L-only) mode.")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/config.yaml")
@@ -220,8 +302,15 @@ def main():
     # ---- sidebar controls -------------------------------------------------
     s = st.sidebar
     s.header("⚙️ Controls")
-    s.caption("Synthetic doubly-shadowed crater. Every knob updates live.")
-    grid_n = s.select_slider("Grid size (px)", [128, 160, 192, 224, 256], value=192)
+    source = s.radio("Data source", ["Synthetic crater", "Upload real data"],
+                     help="Synthetic = built-in doubly-shadowed crater with ground "
+                          "truth. Real = drop in the organisers' DFSAR/OHRC + a LOLA DEM.")
+    real_paths = None
+    if source == "Upload real data":
+        real_paths = _real_upload_panel(s)
+    grid_n = s.select_slider(
+        "Grid size (px)" if source == "Synthetic crater" else "Grid cap (px)",
+        [128, 160, 192, 224, 256, 320, 384], value=192)
     seed = s.number_input("Random seed", 0, 9999, 42, 1)
 
     s.subheader("Detection")
@@ -240,13 +329,31 @@ def main():
     battery = s.slider("Rover battery (Wh)", 500, 4000, 2000, 100)
     n_mc = s.select_slider("Volume Monte-Carlo samples", [400, 800, 1500, 3000], value=800)
 
+    if source == "Upload real data" and not (real_paths and real_paths.get("dem")
+                                              and real_paths.get("dfsar_l")):
+        st.info("⬆️ Upload at least a **LOLA DEM** and an **L-band DFSAR** product in "
+                "the sidebar to run on real data. (S-band & OHRC optional.) "
+                "Meanwhile, see the synthetic crater by switching the data source.")
+        st.stop()
+
     with st.spinner("Computing detection, volume, landing & traverse…"):
-        scene, feats = get_base(seed, grid_n, grid_n)
-        radar_prob, rock_prob, importance, backend = get_radar_prob(
-            seed, grid_n, grid_n, cpr_min, dop_max)
-        ice = build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max)
-        plan = get_plan(seed, grid_n, grid_n, cpr_min, dop_max, k, target_prob,
-                        unc_max, float(battery), float(slope_lim), float(prox_w), int(n_mc))
+        if source == "Synthetic crater":
+            scene, feats = get_base(seed, grid_n, grid_n)
+            radar_prob, rock_prob, importance, backend = get_radar_prob(
+                seed, grid_n, grid_n, cpr_min, dop_max)
+            ice = build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max)
+            plan = get_plan(seed, grid_n, grid_n, cpr_min, dop_max, k, target_prob,
+                            unc_max, float(battery), float(slope_lim), float(prox_w), int(n_mc))
+        else:
+            scene, feats = get_real_base(real_paths["sig"], real_paths["dem"],
+                                         real_paths["dfsar_l"], real_paths.get("dfsar_s", ""),
+                                         real_paths.get("ohrc", ""), int(grid_n))
+            cfg = _knob_cfg(seed, n_mc, battery, slope_lim, prox_w)
+            cfg.detection.cpr_ice_min = cpr_min
+            cfg.detection.dop_ice_max = dop_max
+            radar_prob, rock_prob, importance, backend = detect_core(feats, cfg)
+            ice = build_ice(feats, radar_prob, rock_prob, k, target_prob, unc_max)
+            plan = plan_core(scene, feats, ice, cfg)
 
     vol = plan["vol"]
     metrics = plan["metrics"]
@@ -296,17 +403,26 @@ def main():
         st.markdown("#### Ice and rock collide on CPR — but separate on DOP")
         cpr = feats.bands["cpr_L"].ravel()
         dop = feats.bands["dop_L"].ravel()
-        cls = scene.truth["class_map"].ravel()
         rng = np.random.default_rng(0)
         idx = rng.choice(len(cpr), size=min(5000, len(cpr)), replace=False)
-        names = {0: "flat regolith", 1: "ICE", 2: "rocky rim"}
-        colors = {0: "#5566aa", 1: ICE, 2: ROCK}
         fig = go.Figure()
-        for kcls in (0, 2, 1):
-            m = cls[idx] == kcls
-            fig.add_trace(go.Scatter(x=cpr[idx][m], y=dop[idx][m], mode="markers",
-                                     marker=dict(size=4, color=colors[kcls], opacity=0.5),
-                                     name=names[kcls]))
+        if "class_map" in scene.truth:
+            cls = scene.truth["class_map"].ravel()
+            names = {0: "flat regolith", 1: "ICE", 2: "rocky rim"}
+            colors = {0: "#5566aa", 1: ICE, 2: ROCK}
+            for kcls in (0, 2, 1):
+                m = cls[idx] == kcls
+                fig.add_trace(go.Scatter(x=cpr[idx][m], y=dop[idx][m], mode="markers",
+                                         marker=dict(size=4, color=colors[kcls], opacity=0.5),
+                                         name=names[kcls]))
+        else:
+            # real mode: no labels — colour by HIMADRI's ice probability
+            prob = ice.probability.ravel()[idx]
+            fig.add_trace(go.Scatter(
+                x=cpr[idx], y=dop[idx], mode="markers",
+                marker=dict(size=4, color=prob, colorscale=ICE_SCALE, cmin=0, cmax=1,
+                            opacity=0.6, colorbar=dict(title="ice prob", thickness=12)),
+                name="pixels"))
         fig.add_vline(x=cpr_min, line_dash="dash", line_color="#aaaaaa")
         fig.add_hline(y=dop_max, line_dash="dash", line_color="#aaaaaa")
         fig.add_annotation(x=cpr_min + 0.25, y=dop_max / 2, text="ICE window",
@@ -372,6 +488,13 @@ def main():
 
     # ---- tab: validation --------------------------------------------------
     with tabs[4]:
+        if metrics is None:
+            st.info("**Real-data mode** — no pixel-level ground truth exists for an "
+                    "actual crater, so ROC-AUC/IoU aren't defined. Confidence instead "
+                    "comes from converging physical evidence (CPR + DOP + m-χ + L/S + "
+                    "optical), per-pixel uncertainty, and the feature importances below. "
+                    "Quantitative skill is demonstrated on the synthetic crater, where "
+                    "truth is known.")
         if metrics:
             cc = st.columns(2)
             cc[0].markdown("#### Detection vs synthetic ground truth")

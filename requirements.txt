@@ -1,22 +1,36 @@
-# Core (CPU, always required)
-numpy
-scipy
-scikit-image
-scikit-learn
-rasterio
-shapely
-pyproj
-geopandas
-matplotlib
-typer
-pyyaml
-jinja2
-pandas
-networkx
-loguru
-pytest
+# HIMADRI runtime dependencies — pinned to verified-working versions (Python 3.12).
+# This set is sufficient to host the web app (FastAPI API + React build).
 
-# Optional accelerators / upgrades (the pipeline runs WITHOUT these):
-#   pip install xgboost                              # faster, importance-rich classifier
-#   pip install torch segmentation-models-pytorch    # U-Net spatial refinement
-#   pip install streamlit plotly                     # interactive dashboard
+# Web service
+fastapi==0.138.2
+uvicorn[standard]==0.49.0
+python-multipart==0.0.32
+jinja2==3.1.6
+
+# Scientific core
+numpy==2.5.0
+scipy==1.18.0
+scikit-learn==1.9.0
+scikit-image==0.26.0
+pandas==3.0.3
+networkx==3.6.1
+matplotlib==3.11.0
+pillow==12.2.0
+
+# Geospatial
+rasterio==1.5.0
+geopandas==1.1.3
+shapely==2.1.2
+pyproj==3.7.2
+affine==2.4.0
+
+# CLI / config / logging
+typer==0.26.7
+pyyaml==6.0.3
+loguru==0.7.3
+
+# Optional (pipeline runs WITHOUT these):
+#   xgboost                            # faster, importance-rich classifier
+#   torch segmentation-models-pytorch  # U-Net spatial refinement
+#   streamlit plotly                   # alternate Streamlit dashboard
+#   pytest                             # tests

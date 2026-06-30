@@ -1,0 +1,20 @@
+# Environments / build caches
+.venv/
+**/__pycache__/
+*.pyc
+web/node_modules/
+node_modules/
+.DS_Store
+
+# Multi-GB raw mission inputs — DO NOT COMMIT (GitHub rejects >100 MB).
+# These are only needed to RE-RUN the pipeline; the deployed app uses
+# data/outputs/real_faustini/ (committed, ~4 MB) instead.
+*.zip
+*.IMG
+*.LBL
+data/raw/
+data/interim/
+data/processed/
+rover_assets/
+
+# Keep (needed to deploy): web/dist/, data/outputs/real_faustini/, src/, config/

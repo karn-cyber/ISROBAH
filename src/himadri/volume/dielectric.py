@@ -72,6 +72,10 @@ def estimate_volume(ice: IceResult, feats: FeatureStack, cfg: Config) -> VolumeR
     upper = float(np.percentile(totals, 95))
     mean_frac = float(np.median(frac_means))
 
+    # Monte-Carlo distribution (for an honest uncertainty histogram in the UI)
+    counts, edges = np.histogram(totals, bins=30)
+    mc_hist = {"counts": counts.tolist(), "edges": [float(e) for e in edges]}
+
     # per-depth-bin breakdown: buried ice (high L/S) weighted toward deeper bins
     f_nom = ice_fraction_from_ls(ls, 4.0, 0.6) * gate
     f_nom = np.minimum(f_nom, np.mean(vc.porosity_prior))
@@ -90,6 +94,12 @@ def estimate_volume(ice: IceResult, feats: FeatureStack, cfg: Config) -> VolumeR
             "depth_m": vc.depth_m,
             "mean_eps_eff": float(np.nanmean(eps_eff_map[f_nom > 0]) if (f_nom > 0).any() else vc.eps_regolith),
             "contributing_pixels": int(contributing.sum()),
+            "mc_hist": mc_hist,
+            "priors": {
+                "abundance_a": [3.2, 4.8], "abundance_b": [0.4, 0.8],
+                "porosity": list(vc.porosity_prior), "eps_ice": vc.eps_ice,
+                "eps_regolith": vc.eps_regolith,
+            },
         },
     )
 

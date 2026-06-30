@@ -28,8 +28,15 @@ def suitability(feats: FeatureStack, ice: IceResult, cfg: Config) -> np.ndarray:
     rough = b["roughness"]
     illum = b["illumination_frac"]
 
-    # distance (m) to high-confidence ice
+    # distance (m) to the mission target: detected ice if any, else the
+    # doubly-shadowed floor (the crater we must reach to access ice). This keeps
+    # landing sites clustered on the illuminated approach to the target rather
+    # than scattering to far illuminated flats.
     target = ice.probability > cfg.detection.target_prob
+    if not target.any() and "doubly_shadowed_mask" in b:
+        target = b["doubly_shadowed_mask"] > 0.5
+    if not target.any() and "psr_mask" in b:
+        target = b["psr_mask"] > 0.5
     if target.any():
         dist = ndimage.distance_transform_edt(~target) * feats.grid.res_m
     else:
@@ -49,6 +56,13 @@ def suitability(feats: FeatureStack, ice: IceResult, cfg: Config) -> np.ndarray:
     score[slope > cfg.landing.max_slope_deg] = 0.0
     # cannot land inside permanent shadow (no power, no visibility)
     score[b["psr_mask"] > 0.5] *= 0.15
+    # keep sites away from the grid border (off-scene / not real approach terrain)
+    m = max(int(0.06 * min(score.shape)), 4)
+    score[:m, :] = 0; score[-m:, :] = 0; score[:, :m] = 0; score[:, -m:] = 0
+    # require real radar context nearby when available (don't land blind)
+    if "radar_valid" in b:
+        near_radar = ndimage.maximum_filter((b["radar_valid"] > 0.5).astype(np.float32), size=15)
+        score *= (0.3 + 0.7 * near_radar)
     return score.astype(np.float32)
 
 

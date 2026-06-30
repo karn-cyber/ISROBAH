@@ -1,0 +1,24 @@
+mode: real
+seed: 42
+grid:
+  res_m: 30                 # 30 m keeps crater-wall slopes connected for planning
+  center_lon: 77.0          # doubly-shadowed crater inside Faustini PSR
+  center_lat: -87.2
+  half_width_m: 6000        # 12 km box -> 400x400 grid (the sub-crater, not all of Faustini)
+paths:
+  dem: LDEM_85S_10M.LBL                                   # LOLA 10 m polar tile (read via .LBL)
+  dfsar_l: ch2_sar_ncxl_20241005t052503010_d_cp_d18-2.zip # real L1A SLC product (auto-detected)
+  dfsar_s: null                                           # L-band only -> L/S feature neutral
+  ohrc: null                                              # pending; roughness from DEM
+  outdir: data/outputs/real_faustini
+detection:
+  cpr_ice_min: 1.0
+  dop_ice_max: 0.40         # compact-pol DOP runs higher than the synthetic 0.13
+  target_prob: 0.55
+landing:
+  weights: {slope: 0.18, roughness: 0.15, illumination: 0.17, proximity: 0.42, comms: 0.08}
+  max_slope_deg: 15
+planning:
+  battery_Wh: 3500          # dedicated PSR-access prospecting rover
+  thermal_limit_min: 1080   # 18 h battery-warmed survival in shadow
+  max_slope_deg: 30
